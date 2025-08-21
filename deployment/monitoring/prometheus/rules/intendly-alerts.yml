@@ -1,0 +1,344 @@
+# Intent-Based Trading Aggregator - Prometheus Alert Rules
+# Production-ready alerting rules for comprehensive monitoring
+
+groups:
+  # =============================================================================
+  # SYSTEM HEALTH ALERTS
+  # =============================================================================
+  - name: system-health
+    rules:
+      - alert: ServiceDown
+        expr: up{job=~"backend-.*|websocket-.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "Service {{ $labels.job }} has been down for more than 1 minute"
+          runbook_url: "https://docs.intendly.xyz/runbooks/service-down"
+
+      - alert: HighCPUUsage
+        expr: (100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)) > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is above 80% for more than 5 minutes on {{ $labels.instance }}"
+
+      - alert: HighMemoryUsage
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory usage is above 85% for more than 5 minutes on {{ $labels.instance }}"
+
+      - alert: DiskSpaceLow
+        expr: (node_filesystem_size_bytes - node_filesystem_free_bytes) / node_filesystem_size_bytes * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "Low disk space on {{ $labels.instance }}"
+          description: "Disk usage is above 85% on {{ $labels.instance }}"
+
+  # =============================================================================
+  # APPLICATION PERFORMANCE ALERTS
+  # =============================================================================
+  - name: application-performance
+    rules:
+      - alert: HighErrorRate
+        expr: sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) * 100 > 5
+        for: 2m
+        labels:
+          severity: critical
+          component: application
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is above 5% for more than 2 minutes"
+          runbook_url: "https://docs.intendly.xyz/runbooks/high-error-rate"
+
+      - alert: HighResponseTime
+        expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="backend-relayer"}[5m])) by (le)) > 2
+        for: 5m
+        labels:
+          severity: warning
+          component: application
+        annotations:
+          summary: "High response time detected"
+          description: "95th percentile response time is above 2 seconds"
+
+      - alert: LowThroughput
+        expr: sum(rate(http_requests_total{job="backend-relayer"}[5m])) < 10
+        for: 10m
+        labels:
+          severity: warning
+          component: application
+        annotations:
+          summary: "Low request throughput"
+          description: "Request rate is below 10 requests/second for more than 10 minutes"
+
+  # =============================================================================
+  # INTENT PROCESSING ALERTS
+  # =============================================================================
+  - name: intent-processing
+    rules:
+      - alert: IntentProcessingStalled
+        expr: increase(intents_processed_total[5m]) == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: trading
+        annotations:
+          summary: "Intent processing has stalled"
+          description: "No intents have been processed in the last 5 minutes"
+          runbook_url: "https://docs.intendly.xyz/runbooks/intent-processing-stalled"
+
+      - alert: HighIntentFailureRate
+        expr: rate(intents_failed_total[5m]) / rate(intents_processed_total[5m]) * 100 > 10
+        for: 3m
+        labels:
+          severity: warning
+          component: trading
+        annotations:
+          summary: "High intent failure rate"
+          description: "Intent failure rate is above 10% for more than 3 minutes"
+
+      - alert: LongSettlementTime
+        expr: histogram_quantile(0.95, sum(rate(intent_settlement_duration_seconds_bucket[5m])) by (le)) > 30
+        for: 5m
+        labels:
+          severity: warning
+          component: trading
+        annotations:
+          summary: "Long intent settlement time"
+          description: "95th percentile settlement time is above 30 seconds"
+
+      - alert: LowSolverParticipation
+        expr: avg_over_time(active_solvers[10m]) < 3
+        for: 5m
+        labels:
+          severity: warning
+          component: trading
+        annotations:
+          summary: "Low solver participation"
+          description: "Less than 3 solvers are active on average"
+
+  # =============================================================================
+  # DATABASE ALERTS
+  # =============================================================================
+  - name: database
+    rules:
+      - alert: DatabaseDown
+        expr: up{job="postgres-exporter"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "PostgreSQL is down"
+          description: "PostgreSQL database is not responding"
+          runbook_url: "https://docs.intendly.xyz/runbooks/database-down"
+
+      - alert: HighDatabaseConnections
+        expr: pg_stat_activity_count > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "High number of database connections"
+          description: "Database connection count is above 80"
+
+      - alert: LongRunningQueries
+        expr: pg_stat_activity_max_tx_duration > 300
+        for: 2m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "Long running database queries detected"
+          description: "Queries running for more than 5 minutes detected"
+
+      - alert: DatabaseReplicationLag
+        expr: pg_replication_lag_seconds > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "Database replication lag is high"
+          description: "Replication lag is above 10 seconds"
+
+  # =============================================================================
+  # REDIS ALERTS
+  # =============================================================================
+  - name: redis
+    rules:
+      - alert: RedisDown
+        expr: up{job="redis-exporter"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: cache
+        annotations:
+          summary: "Redis is down"
+          description: "Redis cache is not responding"
+          runbook_url: "https://docs.intendly.xyz/runbooks/redis-down"
+
+      - alert: RedisHighMemoryUsage
+        expr: redis_memory_used_bytes / redis_memory_max_bytes * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Redis memory usage is high"
+          description: "Redis memory usage is above 90%"
+
+      - alert: RedisSlowLog
+        expr: increase(redis_slowlog_length[5m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Redis slow queries detected"
+          description: "More than 10 slow queries detected in the last 5 minutes"
+
+  # =============================================================================
+  # WEBSOCKET ALERTS
+  # =============================================================================
+  - name: websocket
+    rules:
+      - alert: WebSocketConnectionDrop
+        expr: rate(websocket_connections_closed_total[5m]) > rate(websocket_connections_opened_total[5m]) * 2
+        for: 3m
+        labels:
+          severity: warning
+          component: websocket
+        annotations:
+          summary: "High WebSocket connection drop rate"
+          description: "WebSocket connections are being closed at twice the rate they're being opened"
+
+      - alert: WebSocketHighLatency
+        expr: histogram_quantile(0.95, sum(rate(websocket_message_duration_seconds_bucket[5m])) by (le)) > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: websocket
+        annotations:
+          summary: "High WebSocket message latency"
+          description: "95th percentile WebSocket message latency is above 1 second"
+
+  # =============================================================================
+  # KUBERNETES ALERTS
+  # =============================================================================
+  - name: kubernetes
+    rules:
+      - alert: PodCrashLooping
+        expr: rate(kube_pod_container_status_restarts_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: kubernetes
+        annotations:
+          summary: "Pod {{ $labels.pod }} is crash looping"
+          description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is restarting frequently"
+
+      - alert: PodNotReady
+        expr: kube_pod_status_ready{condition="false"} == 1
+        for: 5m
+        labels:
+          severity: warning
+          component: kubernetes
+        annotations:
+          summary: "Pod {{ $labels.pod }} is not ready"
+          description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been not ready for more than 5 minutes"
+
+      - alert: DeploymentReplicasMismatch
+        expr: kube_deployment_spec_replicas != kube_deployment_status_available_replicas
+        for: 10m
+        labels:
+          severity: warning
+          component: kubernetes
+        annotations:
+          summary: "Deployment {{ $labels.deployment }} has mismatched replicas"
+          description: "Deployment {{ $labels.deployment }} has {{ $labels.spec_replicas }} desired but {{ $labels.available_replicas }} available replicas"
+
+  # =============================================================================
+  # BLOCKCHAIN ALERTS
+  # =============================================================================
+  - name: blockchain
+    rules:
+      - alert: BlockchainConnectionLost
+        expr: up{job="blockchain-metrics"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: blockchain
+        annotations:
+          summary: "Blockchain connection lost"
+          description: "Connection to blockchain RPC endpoint has been lost"
+          runbook_url: "https://docs.intendly.xyz/runbooks/blockchain-connection-lost"
+
+      - alert: HighGasPrice
+        expr: current_gas_price_gwei > 100
+        for: 10m
+        labels:
+          severity: warning
+          component: blockchain
+        annotations:
+          summary: "High gas price detected"
+          description: "Current gas price is above 100 gwei"
+
+      - alert: ContractCallFailure
+        expr: rate(contract_call_failures_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: blockchain
+        annotations:
+          summary: "Contract call failures detected"
+          description: "Contract calls are failing at a rate above 0.1 per second"
+
+  # =============================================================================
+  # BUSINESS METRICS ALERTS
+  # =============================================================================
+  - name: business-metrics
+    rules:
+      - alert: LowTradingVolume
+        expr: sum(increase(trading_volume_usd[1h])) < 1000
+        for: 15m
+        labels:
+          severity: info
+          component: business
+        annotations:
+          summary: "Low trading volume"
+          description: "Trading volume in the last hour is below $1000"
+
+      - alert: HighSlippageRate
+        expr: avg_over_time(average_slippage_bps[10m]) > 50
+        for: 5m
+        labels:
+          severity: warning
+          component: business
+        annotations:
+          summary: "High average slippage"
+          description: "Average slippage is above 50 basis points"
+
+      - alert: SolverPerformanceDegraded
+        expr: avg_over_time(solver_success_rate[10m]) < 0.95
+        for: 5m
+        labels:
+          severity: warning
+          component: business
+        annotations:
+          summary: "Solver performance degraded"
+          description: "Average solver success rate is below 95%"

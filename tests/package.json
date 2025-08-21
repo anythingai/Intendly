@@ -1,0 +1,56 @@
+{
+  "name": "@intendly/tests",
+  "version": "1.0.0",
+  "description": "Comprehensive test suite for Intent-Based Trading Aggregator",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup": "docker-compose -f setup/docker-compose.test.yml up -d",
+    "teardown": "docker-compose -f setup/docker-compose.test.yml down -v",
+    "test": "vitest",
+    "test:unit": "vitest run unit/**/*.test.ts",
+    "test:integration": "vitest run integration/**/*.test.ts",
+    "test:e2e": "playwright test",
+    "test:load": "artillery run performance/load-tests/*.yml",
+    "test:all": "npm run test:unit && npm run test:integration && npm run test:e2e",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
+    "test:ci": "npm run setup && sleep 30 && npm run test:all && npm run teardown",
+    "contracts:deploy": "forge script ../contracts/script/Deploy.s.sol --rpc-url http://localhost:8545 --broadcast",
+    "contracts:test": "forge test --root ../contracts",
+    "clean": "rimraf coverage dist",
+    "lint": "eslint . --ext .ts,.js",
+    "lint:fix": "eslint . --ext .ts,.js --fix",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@playwright/test": "^1.40.0",
+    "artillery": "^2.0.0",
+    "axios": "^1.6.2",
+    "ethers": "^6.8.1",
+    "pg": "^8.11.3",
+    "redis": "^4.6.10",
+    "supertest": "^6.3.3",
+    "viem": "^1.19.9",
+    "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/pg": "^8.10.7",
+    "@types/supertest": "^2.0.16",
+    "@types/ws": "^8.5.10",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "@vitest/coverage-v8": "^1.0.4",
+    "eslint": "^8.54.0",
+    "eslint-config-prettier": "^9.0.0",
+    "eslint-plugin-prettier": "^5.0.1",
+    "prettier": "^3.1.0",
+    "rimraf": "^5.0.5",
+    "typescript": "^5.3.2",
+    "vitest": "^1.0.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

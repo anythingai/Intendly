@@ -1,0 +1,191 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-relayer-service
+  namespace: intendly
+  labels:
+    app: backend-relayer
+    component: backend
+    service: relayer
+    app.kubernetes.io/name: intent-based-trading-aggregator
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: intendly
+spec:
+  selector:
+    app: backend-relayer
+  ports:
+  - name: http
+    port: 3001
+    targetPort: 3001
+    protocol: TCP
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+    protocol: TCP
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-coordinator-service
+  namespace: intendly
+  labels:
+    app: backend-coordinator
+    component: backend
+    service: coordinator
+    app.kubernetes.io/name: intent-based-trading-aggregator
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: intendly
+spec:
+  selector:
+    app: backend-coordinator
+  ports:
+  - name: http
+    port: 3003
+    targetPort: 3003
+    protocol: TCP
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+    protocol: TCP
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: websocket-service
+  namespace: intendly
+  labels:
+    app: websocket-server
+    component: backend
+    service: websocket
+    app.kubernetes.io/name: intent-based-trading-aggregator
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: intendly
+spec:
+  selector:
+    app: websocket-server
+  ports:
+  - name: websocket
+    port: 3002
+    targetPort: 3002
+    protocol: TCP
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+    protocol: TCP
+  type: ClusterIP
+  sessionAffinity: ClientIP  # Important for WebSocket connections
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-metrics-service
+  namespace: intendly
+  labels:
+    app: backend-metrics
+    component: monitoring
+    app.kubernetes.io/name: intent-based-trading-aggregator
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/part-of: intendly
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"
+    prometheus.io/path: "/metrics"
+spec:
+  selector:
+    component: backend
+  ports:
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+    protocol: TCP
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: backend-ingress
+  namespace: intendly
+  labels:
+    app.kubernetes.io/name: intent-based-trading-aggregator
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/part-of: intendly
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    nginx.ingress.kubernetes.io/websocket-services: "websocket-service"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  tls:
+  - hosts:
+    - api.intendly.xyz
+    secretName: api-tls-secret
+  rules:
+  - host: api.intendly.xyz
+    http:
+      paths:
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: backend-relayer-service
+            port:
+              number: 3001
+      - path: /coordinator
+        pathType: Prefix
+        backend:
+          service:
+            name: backend-coordinator-service
+            port:
+              number: 3003
+      - path: /ws
+        pathType: Prefix
+        backend:
+          service:
+            name: websocket-service
+            port:
+              number: 3002
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend-network-policy
+  namespace: intendly
+spec:
+  podSelector:
+    matchLabels:
+      component: backend
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    - namespaceSelector:
+        matchLabels:
+          name: intendly-monitoring
+    - podSelector:
+        matchLabels:
+          component: backend
+    ports:
+    - protocol: TCP
+      port: 3001
+    - protocol: TCP
+      port: 3002
+    - protocol: TCP
+      port: 3003
+    - protocol: TCP
+      port: 9090
+  egress:
+  - to: []
+    ports:
+    - protocol: TCP
+    - protocol: UDP

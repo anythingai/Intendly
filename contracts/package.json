@@ -1,0 +1,33 @@
+{
+  "name": "@intendly/contracts",
+  "version": "0.1.0",
+  "description": "Smart contracts for Intent-Based Trading Aggregator",
+  "private": true,
+  "scripts": {
+    "build": "forge build",
+    "test": "forge test",
+    "test:fork": "forge test --fork-url $XLAYER_RPC_URL",
+    "test:coverage": "forge coverage",
+    "clean": "forge clean",
+    "fmt": "forge fmt",
+    "lint": "forge fmt --check",
+    "deploy:testnet": "forge script script/Deploy.s.sol --rpc-url xlayer_testnet --broadcast --verify",
+    "deploy:mainnet": "forge script script/Deploy.s.sol --rpc-url xlayer --broadcast --verify",
+    "verify": "forge script script/Verify.s.sol",
+    "flatten": "forge flatten",
+    "gas-report": "forge test --gas-report",
+    "dev": "forge build --watch"
+  },
+  "devDependencies": {
+    "ds-test": "https://github.com/dapphub/ds-test",
+    "forge-std": "https://github.com/foundry-rs/forge-std"
+  },
+  "keywords": [
+    "solidity",
+    "foundry",
+    "smart-contracts",
+    "defi",
+    "intent-based",
+    "trading"
+  ]
+}

@@ -1,0 +1,85 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+test = "test"
+cache_path = "cache"
+broadcast = "broadcast"
+
+# Solidity compiler settings
+solc = "0.8.19"
+optimizer = true
+optimizer_runs = 1000000
+via_ir = false
+bytecode_hash = "none"
+cbor_metadata = false
+
+# Test settings
+verbosity = 2
+fuzz = { runs = 1000 }
+invariant = { runs = 256, depth = 15, fail_on_revert = false }
+gas_reports = ["IntentSettlement"]
+gas_limit = 30000000
+
+# Library remappings
+remappings = [
+    "@openzeppelin/=lib/openzeppelin-contracts/",
+    "@forge-std/=lib/forge-std/src/",
+    "ds-test/=lib/ds-test/src/"
+]
+
+# RPC settings
+[rpc_endpoints]
+xlayer = "https://xlayerrpc.okx.com"
+xlayer_testnet = "https://testrpc.xlayer.tech"
+mainnet = "https://eth-mainnet.alchemyapi.io/v2/${ALCHEMY_API_KEY}"
+sepolia = "https://eth-sepolia.alchemyapi.io/v2/${ALCHEMY_API_KEY}"
+arbitrum = "https://arb-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}"
+polygon = "https://polygon-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}"
+base = "https://base-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}"
+optimism = "https://opt-mainnet.g.alchemy.com/v2/${ALCHEMY_API_KEY}"
+
+# Etherscan API keys for verification
+[etherscan]
+xlayer = { key = "${XLAYER_API_KEY}", url = "https://www.oklink.com/api/v5/explorer/contract/verify-source-code-plugin/XLAYER" }
+mainnet = { key = "${ETHERSCAN_API_KEY}" }
+sepolia = { key = "${ETHERSCAN_API_KEY}" }
+arbitrum = { key = "${ARBISCAN_API_KEY}", url = "https://api.arbiscan.io/api" }
+polygon = { key = "${POLYGONSCAN_API_KEY}", url = "https://api.polygonscan.com/api" }
+base = { key = "${BASESCAN_API_KEY}", url = "https://api.basescan.org/api" }
+optimism = { key = "${OPTIMISM_API_KEY}", url = "https://api-optimistic.etherscan.io/api" }
+
+# Gas price settings
+[fmt]
+bracket_spacing = true
+int_types = "long"
+line_length = 100
+multiline_func_header = "all"
+number_underscore = "preserve"
+quote_style = "double"
+tab_width = 4
+wrap_comments = true
+
+# Deployment profiles
+[profile.production]
+optimizer_runs = 10000000
+via_ir = true
+
+[profile.test]
+optimizer = false
+via_ir = false
+
+# Fork testing profile for integration tests
+[profile.fork]
+optimizer = true
+optimizer_runs = 1000
+via_ir = false
+fork_block_number = 18500000
+match_test = "testFork"
+
+# Gas reporter settings
+[profile.gas-report]
+optimizer = true
+optimizer_runs = 10000000
+via_ir = true
+gas_reports = ["*"]

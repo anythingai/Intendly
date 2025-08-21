@@ -1,0 +1,348 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-relayer
+  namespace: intendly
+  labels:
+    app: backend-relayer
+    component: backend
+    service: relayer
+    app.kubernetes.io/name: intent-based-trading-aggregator
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: intendly
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: backend-relayer
+  template:
+    metadata:
+      labels:
+        app: backend-relayer
+        component: backend
+        service: relayer
+    spec:
+      containers:
+      - name: backend-relayer
+        image: ghcr.io/intendly/intendly-backend:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 3001
+          name: http
+        - containerPort: 9090
+          name: metrics
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: SERVICE_NAME
+          value: "relayer"
+        - name: API_PORT
+          value: "3001"
+        - name: PROMETHEUS_PORT
+          value: "9090"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: database-secret
+              key: url
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: redis-secret
+              key: url
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: backend-secret
+              key: jwt-secret
+        - name: CHAIN_ID
+          valueFrom:
+            configMapKeyRef:
+              name: blockchain-config
+              key: chain-id
+        - name: RPC_URL
+          valueFrom:
+            configMapKeyRef:
+              name: blockchain-config
+              key: rpc-url
+        - name: SETTLEMENT_CONTRACT_ADDRESS
+          valueFrom:
+            configMapKeyRef:
+              name: blockchain-config
+              key: settlement-contract
+        - name: PERMIT2_ADDRESS
+          valueFrom:
+            configMapKeyRef:
+              name: blockchain-config
+              key: permit2-address
+        - name: ROUTER_ADDRESS
+          valueFrom:
+            configMapKeyRef:
+              name: blockchain-config
+              key: router-address
+        - name: LOG_LEVEL
+          value: "info"
+        - name: METRICS_ENABLED
+          value: "true"
+        - name: CORS_ORIGINS
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: cors-origins
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3001
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3001
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+        volumeMounts:
+        - name: logs
+          mountPath: /app/logs
+      volumes:
+      - name: logs
+        emptyDir: {}
+      imagePullSecrets:
+      - name: ghcr-secret
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-coordinator
+  namespace: intendly
+  labels:
+    app: backend-coordinator
+    component: backend
+    service: coordinator
+    app.kubernetes.io/name: intent-based-trading-aggregator
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: intendly
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend-coordinator
+  template:
+    metadata:
+      labels:
+        app: backend-coordinator
+        component: backend
+        service: coordinator
+    spec:
+      containers:
+      - name: backend-coordinator
+        image: ghcr.io/intendly/intendly-backend:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 3003
+          name: http
+        - containerPort: 9090
+          name: metrics
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: SERVICE_NAME
+          value: "coordinator"
+        - name: API_PORT
+          value: "3003"
+        - name: PROMETHEUS_PORT
+          value: "9090"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: database-secret
+              key: url
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: redis-secret
+              key: url
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: backend-secret
+              key: jwt-secret
+        - name: CHAIN_ID
+          valueFrom:
+            configMapKeyRef:
+              name: blockchain-config
+              key: chain-id
+        - name: RPC_URL
+          valueFrom:
+            configMapKeyRef:
+              name: blockchain-config
+              key: rpc-url
+        - name: SETTLEMENT_CONTRACT_ADDRESS
+          valueFrom:
+            configMapKeyRef:
+              name: blockchain-config
+              key: settlement-contract
+        - name: LOG_LEVEL
+          value: "info"
+        - name: METRICS_ENABLED
+          value: "true"
+        - name: BIDDING_WINDOW_MS
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: bidding-window-ms
+        - name: MAX_SOLVER_FEE_BPS
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: max-solver-fee-bps
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3003
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3003
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+        volumeMounts:
+        - name: logs
+          mountPath: /app/logs
+      volumes:
+      - name: logs
+        emptyDir: {}
+      imagePullSecrets:
+      - name: ghcr-secret
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: websocket-server
+  namespace: intendly
+  labels:
+    app: websocket-server
+    component: backend
+    service: websocket
+    app.kubernetes.io/name: intent-based-trading-aggregator
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: intendly
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: websocket-server
+  template:
+    metadata:
+      labels:
+        app: websocket-server
+        component: backend
+        service: websocket
+    spec:
+      containers:
+      - name: websocket-server
+        image: ghcr.io/intendly/intendly-backend:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 3002
+          name: websocket
+        - containerPort: 9090
+          name: metrics
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: SERVICE_NAME
+          value: "websocket"
+        - name: WS_PORT
+          value: "3002"
+        - name: PROMETHEUS_PORT
+          value: "9090"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: database-secret
+              key: url
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: redis-secret
+              key: url
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: backend-secret
+              key: jwt-secret
+        - name: LOG_LEVEL
+          value: "info"
+        - name: METRICS_ENABLED
+          value: "true"
+        - name: WS_MAX_CONNECTIONS
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: ws-max-connections
+        - name: WS_HEARTBEAT_INTERVAL
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: ws-heartbeat-interval
+        - name: WS_CONNECTION_TIMEOUT
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: ws-connection-timeout
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /metrics
+            port: 9090
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /metrics
+            port: 9090
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 2
+        volumeMounts:
+        - name: logs
+          mountPath: /app/logs
+      volumes:
+      - name: logs
+        emptyDir: {}
+      imagePullSecrets:
+      - name: ghcr-secret

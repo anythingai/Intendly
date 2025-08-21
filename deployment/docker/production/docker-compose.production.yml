@@ -1,0 +1,593 @@
+# Intent-Based Trading Aggregator - Enhanced Production Environment
+# Usage: docker-compose -f deployment/docker/production/docker-compose.production.yml up -d
+
+version: '3.8'
+
+services:
+  # =============================================================================
+  # DATABASE SERVICES
+  # =============================================================================
+  
+  postgres:
+    image: postgres:14-alpine
+    container_name: intendly-postgres-prod
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=en_US.UTF-8"
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "${DATABASE_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - postgres_backups:/backups
+      - ./postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - backend-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
+
+  postgres-backup:
+    image: postgres:14-alpine
+    container_name: intendly-postgres-backup
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: postgres
+      BACKUP_SCHEDULE: ${BACKUP_SCHEDULE:-0 2 * * *}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+    volumes:
+      - postgres_backups:/backups
+      - ./postgres/backup-script.sh:/backup-script.sh:ro
+    networks:
+      - backend-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    command: sh -c "while true; do sleep 3600; done"
+
+  redis:
+    image: redis:7-alpine
+    container_name: intendly-redis-prod
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+      - ./redis/redis.conf:/etc/redis/redis.conf:ro
+    networks:
+      - backend-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    command: redis-server /etc/redis/redis.conf --requirepass ${REDIS_PASSWORD}
+
+  # =============================================================================
+  # BACKEND SERVICES
+  # =============================================================================
+
+  backend-relayer:
+    build:
+      context: ../../../backend
+      dockerfile: Dockerfile
+      target: production
+      args:
+        BUILD_DATE: ${BUILD_DATE:-}
+        VCS_REF: ${VCS_REF:-}
+        VERSION: ${VERSION:-latest}
+    image: ${DOCKER_REGISTRY}/intendly-backend:${VERSION:-latest}
+    container_name: intendly-backend-relayer-prod
+    environment:
+      NODE_ENV: production
+      SERVICE_NAME: relayer
+      API_PORT: 3001
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      CHAIN_ID: ${CHAIN_ID}
+      RPC_URL: ${RPC_URL}
+      SETTLEMENT_CONTRACT_ADDRESS: ${SETTLEMENT_CONTRACT_ADDRESS}
+      PERMIT2_ADDRESS: ${PERMIT2_ADDRESS}
+      ROUTER_ADDRESS: ${ROUTER_ADDRESS}
+      JWT_SECRET: ${JWT_SECRET}
+      LOG_LEVEL: info
+      METRICS_ENABLED: "true"
+      PROMETHEUS_PORT: 9090
+      CORS_ORIGINS: ${CORS_ORIGINS}
+    ports:
+      - "3001:3001"
+      - "9091:9090"  # Metrics
+    volumes:
+      - backend_logs:/app/logs
+    networks:
+      - backend-network
+      - frontend-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 1.5G
+        reservations:
+          cpus: '0.75'
+          memory: 750M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  backend-coordinator:
+    build:
+      context: ../../../backend
+      dockerfile: Dockerfile
+      target: production
+    image: ${DOCKER_REGISTRY}/intendly-backend:${VERSION:-latest}
+    container_name: intendly-backend-coordinator-prod
+    environment:
+      NODE_ENV: production
+      SERVICE_NAME: coordinator
+      API_PORT: 3003
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      CHAIN_ID: ${CHAIN_ID}
+      RPC_URL: ${RPC_URL}
+      SETTLEMENT_CONTRACT_ADDRESS: ${SETTLEMENT_CONTRACT_ADDRESS}
+      JWT_SECRET: ${JWT_SECRET}
+      LOG_LEVEL: info
+      METRICS_ENABLED: "true"
+      PROMETHEUS_PORT: 9090
+      BIDDING_WINDOW_MS: ${BIDDING_WINDOW_MS}
+      MAX_SOLVER_FEE_BPS: ${MAX_SOLVER_FEE_BPS}
+    ports:
+      - "3003:3003"
+      - "9092:9090"  # Metrics
+    volumes:
+      - backend_logs:/app/logs
+    networks:
+      - backend-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 1.5G
+        reservations:
+          cpus: '0.75'
+          memory: 750M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  websocket-server:
+    build:
+      context: ../../../backend
+      dockerfile: Dockerfile
+      target: production
+    image: ${DOCKER_REGISTRY}/intendly-backend:${VERSION:-latest}
+    container_name: intendly-websocket-prod
+    environment:
+      NODE_ENV: production
+      SERVICE_NAME: websocket
+      WS_PORT: 3002
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      JWT_SECRET: ${JWT_SECRET}
+      LOG_LEVEL: info
+      METRICS_ENABLED: "true"
+      PROMETHEUS_PORT: 9090
+      WS_MAX_CONNECTIONS: ${WS_MAX_CONNECTIONS:-10000}
+      WS_HEARTBEAT_INTERVAL: ${WS_HEARTBEAT_INTERVAL:-30000}
+      WS_CONNECTION_TIMEOUT: ${WS_CONNECTION_TIMEOUT:-60000}
+    ports:
+      - "3002:3002"
+      - "9093:9090"  # Metrics
+    volumes:
+      - backend_logs:/app/logs
+    networks:
+      - backend-network
+      - frontend-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # =============================================================================
+  # LOAD BALANCER & REVERSE PROXY
+  # =============================================================================
+
+  nginx:
+    image: nginx:alpine
+    container_name: intendly-nginx-prod
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - nginx_logs:/var/log/nginx
+      - nginx_cache:/var/cache/nginx
+    networks:
+      - frontend-network
+    depends_on:
+      - backend-relayer
+      - backend-coordinator
+      - websocket-server
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # =============================================================================
+  # MONITORING SERVICES
+  # =============================================================================
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: intendly-prometheus-prod
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    networks:
+      - monitoring-network
+      - backend-network
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--storage.tsdb.retention.size=10GB'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: intendly-grafana-prod
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL}
+      GF_SECURITY_SECRET_KEY: ${GRAFANA_SECRET_KEY}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_INSTALL_PLUGINS: grafana-clock-panel,grafana-simple-json-datasource
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - monitoring-network
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: intendly-alertmanager-prod
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    networks:
+      - monitoring-network
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - '--web.external-url=http://localhost:9093'
+      - '--cluster.advertise-address=0.0.0.0:9093'
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+        reservations:
+          cpus: '0.125'
+          memory: 128M
+
+  # =============================================================================
+  # LOG AGGREGATION
+  # =============================================================================
+
+  loki:
+    image: grafana/loki:latest
+    container_name: intendly-loki-prod
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./monitoring/loki.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    networks:
+      - monitoring-network
+    restart: unless-stopped
+    command: -config.file=/etc/loki/local-config.yaml
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: intendly-promtail-prod
+    volumes:
+      - ./monitoring/promtail.yml:/etc/promtail/config.yml:ro
+      - backend_logs:/var/log/backend:ro
+      - nginx_logs:/var/log/nginx:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - monitoring-network
+    restart: unless-stopped
+    depends_on:
+      - loki
+    command: -config.file=/etc/promtail/config.yml
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+
+  # =============================================================================
+  # SECURITY SCANNING
+  # =============================================================================
+
+  trivy:
+    image: aquasec/trivy:latest
+    container_name: intendly-trivy-prod
+    volumes:
+      - trivy_cache:/root/.cache/trivy
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - monitoring-network
+    restart: "no"
+    command: --cache-dir /root/.cache/trivy server --listen 0.0.0.0:4954
+
+# =============================================================================
+# NETWORKS
+# =============================================================================
+
+networks:
+  backend-network:
+    driver: bridge
+    name: intendly-backend-prod
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+  
+  frontend-network:
+    driver: bridge
+    name: intendly-frontend-prod
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+  
+  monitoring-network:
+    driver: bridge
+    name: intendly-monitoring-prod
+    ipam:
+      config:
+        - subnet: 172.22.0.0/16
+
+# =============================================================================
+# VOLUMES
+# =============================================================================
+
+volumes:
+  postgres_data:
+    name: intendly-postgres-prod-data
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR:-/opt/intendly}/postgres
+  
+  postgres_backups:
+    name: intendly-postgres-prod-backups
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${BACKUP_DIR:-/opt/intendly/backups}/postgres
+  
+  redis_data:
+    name: intendly-redis-prod-data
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR:-/opt/intendly}/redis
+  
+  backend_logs:
+    name: intendly-backend-prod-logs
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${LOG_DIR:-/opt/intendly/logs}/backend
+  
+  nginx_logs:
+    name: intendly-nginx-prod-logs
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${LOG_DIR:-/opt/intendly/logs}/nginx
+  
+  nginx_cache:
+    name: intendly-nginx-prod-cache
+  
+  prometheus_data:
+    name: intendly-prometheus-prod-data
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR:-/opt/intendly}/prometheus
+  
+  grafana_data:
+    name: intendly-grafana-prod-data
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR:-/opt/intendly}/grafana
+  
+  alertmanager_data:
+    name: intendly-alertmanager-prod-data
+  
+  loki_data:
+    name: intendly-loki-prod-data
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR:-/opt/intendly}/loki
+  
+  trivy_cache:
+    name: intendly-trivy-cache

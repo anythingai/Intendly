@@ -1,0 +1,103 @@
+{
+  "name": "@intendly/demo-environment",
+  "version": "1.0.0",
+  "description": "Comprehensive demo environment and validation framework for Intent-Based Trading Aggregator",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "setup": "node scripts/setup-demo-environment.js",
+    "teardown": "node scripts/teardown-demo-environment.js",
+    "reset": "npm run teardown && npm run setup",
+    "validate": "npm run validate:system && npm run validate:prd && npm run validate:performance",
+    "validate:system": "vitest run integration/system-integration.test.ts",
+    "validate:prd": "vitest run validation/prd-compliance.test.ts",
+    "validate:performance": "vitest run validation/performance-benchmarks.test.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "demo:start": "node scripts/demo-walkthrough.js",
+    "demo:present": "DEMO_MODE=presentation node scripts/demo-walkthrough.js",
+    "demo:minimal": "docker-compose -f environment/docker-compose.demo.yml --profile minimal up -d",
+    "demo:full": "docker-compose -f environment/docker-compose.demo.yml --profile full up -d",
+    "demo:presentation": "docker-compose -f environment/docker-compose.demo.yml --profile presentation up -d",
+    "demo:stop": "docker-compose -f environment/docker-compose.demo.yml down",
+    "demo:logs": "docker-compose -f environment/docker-compose.demo.yml logs -f",
+    "demo:health": "node scripts/health-check.js",
+    "monitoring:start": "docker-compose -f environment/docker-compose.demo.yml up -d prometheus-demo grafana-demo",
+    "monitoring:stop": "docker-compose -f environment/docker-compose.demo.yml stop prometheus-demo grafana-demo",
+    "scenario:primary": "DEMO_SCENARIO=primary node scenarios/primary-demo.js",
+    "scenario:competition": "DEMO_SCENARIO=competition node scenarios/competitive-bidding.js",
+    "scenario:reliability": "DEMO_SCENARIO=reliability node scenarios/reliability-test.js",
+    "reports:generate": "node scripts/generate-reports.js",
+    "reports:clean": "rm -rf reports/*.json reports/*.html",
+    "build": "tsc --build",
+    "clean": "rm -rf dist node_modules .tsc-cache",
+    "lint": "eslint . --ext .ts,.js",
+    "lint:fix": "eslint . --ext .ts,.js --fix"
+  },
+  "keywords": [
+    "intent-based-trading",
+    "defi",
+    "ethereum",
+    "l2",
+    "x-layer",
+    "demo",
+    "integration-testing",
+    "performance-validation"
+  ],
+  "author": "Intent-Based Trading Aggregator Team",
+  "license": "MIT",
+  "dependencies": {
+    "viem": "^2.7.0",
+    "ws": "^8.16.0",
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.0",
+    "commander": "^11.1.0",
+    "chalk": "^5.3.0",
+    "ora": "^7.0.0",
+    "inquirer": "^9.2.0",
+    "table": "^6.8.0",
+    "express": "^4.18.0",
+    "socket.io": "^4.7.0",
+    "socket.io-client": "^4.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/ws": "^8.5.0",
+    "@types/express": "^4.17.0",
+    "@types/inquirer": "^9.0.0",
+    "vitest": "^1.0.0",
+    "typescript": "^5.3.0",
+    "eslint": "^8.55.0",
+    "@typescript-eslint/eslint-plugin": "^6.14.0",
+    "@typescript-eslint/parser": "^6.14.0",
+    "prettier": "^3.1.0",
+    "tsx": "^4.6.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/intendly/intent-based-trading-aggregator.git",
+    "directory": "demo"
+  },
+  "bugs": {
+    "url": "https://github.com/intendly/intent-based-trading-aggregator/issues"
+  },
+  "homepage": "https://github.com/intendly/intent-based-trading-aggregator/tree/main/demo#readme",
+  "files": [
+    "dist",
+    "scripts",
+    "environment",
+    "scenarios",
+    "tools",
+    "validation",
+    "integration",
+    "monitoring",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

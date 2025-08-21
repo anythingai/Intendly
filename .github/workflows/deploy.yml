@@ -1,0 +1,503 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
+      deploy_contracts:
+        description: 'Deploy smart contracts'
+        required: false
+        default: false
+        type: boolean
+      skip_tests:
+        description: 'Skip tests'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # =============================================================================
+  # SECURITY & VALIDATION
+  # =============================================================================
+  
+  security-scan:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+    - name: Check for secrets
+      uses: trufflesecurity/trufflehog@main
+      with:
+        path: ./
+        base: ${{ github.event.repository.default_branch }}
+        head: HEAD
+        extra_args: --debug --only-verified
+
+  # =============================================================================
+  # BUILD & TEST
+  # =============================================================================
+
+  test:
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.skip_tests }}
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+    
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: intendly_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Setup test environment
+      run: |
+        cp .env.example .env
+        echo "DATABASE_URL=postgresql://postgres:test_password@localhost:5432/intendly_test" >> .env
+        echo "REDIS_URL=redis://localhost:6379" >> .env
+
+    - name: Run linting
+      run: npm run lint
+
+    - name: Run type checking
+      run: npm run type-check
+
+    - name: Run unit tests
+      run: npm test
+      env:
+        NODE_ENV: test
+
+    - name: Run integration tests
+      run: npm run test:integration
+      env:
+        NODE_ENV: test
+        DATABASE_URL: postgresql://postgres:test_password@localhost:5432/intendly_test
+        REDIS_URL: redis://localhost:6379
+
+    - name: Upload test coverage
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage/lcov.info
+        flags: unittests
+        name: codecov-umbrella
+
+  # =============================================================================
+  # SMART CONTRACT TESTING
+  # =============================================================================
+
+  contract-test:
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.skip_tests }}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install Foundry
+      uses: foundry-rs/foundry-toolchain@v1
+
+    - name: Run contract tests
+      run: |
+        cd contracts
+        forge test -vvv
+        forge coverage
+
+    - name: Run security analysis
+      run: |
+        cd contracts
+        forge fmt --check
+        # Additional security tools can be added here
+
+  # =============================================================================
+  # BUILD DOCKER IMAGES
+  # =============================================================================
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [test, contract-test]
+    if: always() && (needs.test.result == 'success' || inputs.skip_tests) && needs.contract-test.result == 'success'
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      image-tag: ${{ steps.meta.outputs.tags }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha,prefix={{branch}}-
+
+    - name: Build and push backend image
+      id: build
+      uses: docker/build-push-action@v5
+      with:
+        context: ./backend
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        build-args: |
+          BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+          VCS_REF=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.revision'] }}
+          VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
+
+  # =============================================================================
+  # DEPLOY TO STAGING
+  # =============================================================================
+
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && inputs.environment == 'staging')
+    environment: staging
+    concurrency: staging-deployment
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ vars.AWS_REGION }}
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+
+    - name: Configure kubectl
+      run: |
+        aws eks update-kubeconfig --region ${{ vars.AWS_REGION }} --name ${{ vars.EKS_CLUSTER_NAME_STAGING }}
+
+    - name: Deploy contracts (if requested)
+      if: inputs.deploy_contracts
+      run: |
+        echo "Deploying smart contracts to staging..."
+        chmod +x deployment/scripts/deploy-contracts.sh
+        ./deployment/scripts/deploy-contracts.sh staging false
+      env:
+        DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY_STAGING }}
+        CONTRACT_OWNER: ${{ secrets.CONTRACT_OWNER_STAGING }}
+        FEE_TREASURY: ${{ secrets.FEE_TREASURY_STAGING }}
+        RPC_URL: ${{ vars.RPC_URL_STAGING }}
+        CHAIN_ID: ${{ vars.CHAIN_ID_STAGING }}
+
+    - name: Deploy to staging
+      run: |
+        echo "Deploying to staging environment..."
+        chmod +x deployment/scripts/deploy.sh
+        ./deployment/scripts/deploy.sh staging all
+      env:
+        KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_STAGING }}
+        GRAFANA_PASSWORD: ${{ secrets.GRAFANA_PASSWORD_STAGING }}
+        DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD_STAGING }}
+        REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD_STAGING }}
+        JWT_SECRET: ${{ secrets.JWT_SECRET_STAGING }}
+
+    - name: Run health checks
+      run: |
+        chmod +x deployment/scripts/health-check.sh
+        ./deployment/scripts/health-check.sh staging
+      env:
+        STAGING_API_URL: ${{ vars.STAGING_API_URL }}
+        STAGING_WS_URL: ${{ vars.STAGING_WS_URL }}
+
+    - name: Update deployment status
+      run: |
+        echo "## 🚀 Staging Deployment Successful" >> $GITHUB_STEP_SUMMARY
+        echo "- **Environment**: Staging" >> $GITHUB_STEP_SUMMARY
+        echo "- **Image**: ${{ needs.build.outputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **API URL**: ${{ vars.STAGING_API_URL }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Deployed at**: $(date -u)" >> $GITHUB_STEP_SUMMARY
+
+  # =============================================================================
+  # DEPLOY TO PRODUCTION
+  # =============================================================================
+
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: [build, deploy-staging]
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.environment == 'production')
+    environment: production
+    concurrency: production-deployment
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ vars.AWS_REGION }}
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+
+    - name: Configure kubectl
+      run: |
+        aws eks update-kubeconfig --region ${{ vars.AWS_REGION }} --name ${{ vars.EKS_CLUSTER_NAME_PRODUCTION }}
+
+    - name: Deploy contracts (if requested)
+      if: inputs.deploy_contracts
+      run: |
+        echo "Deploying smart contracts to production..."
+        chmod +x deployment/scripts/deploy-contracts.sh
+        ./deployment/scripts/deploy-contracts.sh production true
+      env:
+        DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY_PRODUCTION }}
+        CONTRACT_OWNER: ${{ secrets.CONTRACT_OWNER_PRODUCTION }}
+        FEE_TREASURY: ${{ secrets.FEE_TREASURY_PRODUCTION }}
+        RPC_URL: ${{ vars.RPC_URL_PRODUCTION }}
+        CHAIN_ID: ${{ vars.CHAIN_ID_PRODUCTION }}
+        XLAYER_API_KEY: ${{ secrets.XLAYER_API_KEY }}
+
+    - name: Create deployment backup
+      run: |
+        echo "Creating deployment backup..."
+        kubectl get all -n intendly -o yaml > backup-$(date +%Y%m%d-%H%M%S).yaml
+
+    - name: Deploy to production
+      run: |
+        echo "Deploying to production environment..."
+        chmod +x deployment/scripts/deploy.sh
+        ./deployment/scripts/deploy.sh production all
+      env:
+        KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_PRODUCTION }}
+        GRAFANA_PASSWORD: ${{ secrets.GRAFANA_PASSWORD_PRODUCTION }}
+        DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD_PRODUCTION }}
+        REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD_PRODUCTION }}
+        JWT_SECRET: ${{ secrets.JWT_SECRET_PRODUCTION }}
+
+    - name: Run comprehensive health checks
+      run: |
+        chmod +x deployment/scripts/health-check.sh
+        ./deployment/scripts/health-check.sh production 60
+      env:
+        PRODUCTION_API_URL: ${{ vars.PRODUCTION_API_URL }}
+        PRODUCTION_WS_URL: ${{ vars.PRODUCTION_WS_URL }}
+
+    - name: Update deployment status
+      run: |
+        echo "## 🎉 Production Deployment Successful" >> $GITHUB_STEP_SUMMARY
+        echo "- **Environment**: Production" >> $GITHUB_STEP_SUMMARY
+        echo "- **Image**: ${{ needs.build.outputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **API URL**: ${{ vars.PRODUCTION_API_URL }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Deployed at**: $(date -u)" >> $GITHUB_STEP_SUMMARY
+
+    - name: Notify team
+      uses: 8398a7/action-slack@v3
+      if: success()
+      with:
+        status: success
+        text: |
+          🚀 Production Deployment Successful!
+          • Environment: Production
+          • Image: ${{ needs.build.outputs.image-tag }}
+          • API: ${{ vars.PRODUCTION_API_URL }}
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # =============================================================================
+  # ROLLBACK CAPABILITY
+  # =============================================================================
+
+  rollback:
+    runs-on: ubuntu-latest
+    if: failure() && (needs.deploy-staging.result == 'failure' || needs.deploy-production.result == 'failure')
+    needs: [deploy-staging, deploy-production]
+    environment: 
+      name: ${{ github.ref == 'refs/heads/main' && 'staging' || 'production' }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ vars.AWS_REGION }}
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+
+    - name: Rollback deployment
+      run: |
+        ENVIRONMENT=${{ github.ref == 'refs/heads/main' && 'staging' || 'production' }}
+        echo "Rolling back $ENVIRONMENT deployment..."
+        
+        # Rollback to previous deployment
+        kubectl rollout undo deployment/backend-relayer -n intendly
+        kubectl rollout undo deployment/backend-coordinator -n intendly
+        kubectl rollout undo deployment/websocket-server -n intendly
+        
+        # Wait for rollback to complete
+        kubectl rollout status deployment/backend-relayer -n intendly --timeout=300s
+        kubectl rollout status deployment/backend-coordinator -n intendly --timeout=300s
+        kubectl rollout status deployment/websocket-server -n intendly --timeout=300s
+
+    - name: Verify rollback
+      run: |
+        chmod +x deployment/scripts/health-check.sh
+        ./deployment/scripts/health-check.sh ${{ github.ref == 'refs/heads/main' && 'staging' || 'production' }}
+
+    - name: Notify rollback
+      uses: 8398a7/action-slack@v3
+      with:
+        status: failure
+        text: |
+          ⚠️ Deployment failed - Rollback completed
+          • Environment: ${{ github.ref == 'refs/heads/main' && 'staging' || 'production' }}
+          • Rolled back to previous version
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # =============================================================================
+  # POST-DEPLOYMENT TESTING
+  # =============================================================================
+
+  post-deployment-tests:
+    runs-on: ubuntu-latest
+    needs: [deploy-staging, deploy-production]
+    if: success()
+    strategy:
+      matrix:
+        environment: [staging, production]
+        exclude:
+          - environment: staging
+            if: needs.deploy-staging.result != 'success'
+          - environment: production
+            if: needs.deploy-production.result != 'success'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run end-to-end tests
+      run: |
+        npm run test:e2e
+      env:
+        TEST_API_URL: ${{ matrix.environment == 'staging' && vars.STAGING_API_URL || vars.PRODUCTION_API_URL }}
+        TEST_ENVIRONMENT: ${{ matrix.environment }}
+
+    - name: Run performance tests
+      run: |
+        npm run test:performance
+      env:
+        TEST_API_URL: ${{ matrix.environment == 'staging' && vars.STAGING_API_URL || vars.PRODUCTION_API_URL }}
+        TEST_ENVIRONMENT: ${{ matrix.environment }}
+
+    - name: Upload test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-results-${{ matrix.environment }}
+        path: |
+          test-results/
+          coverage/

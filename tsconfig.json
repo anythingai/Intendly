@@ -1,0 +1,57 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "node",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@intendly/contracts": ["./contracts/src"],
+      "@intendly/contracts/*": ["./contracts/src/*"],
+      "@intendly/backend": ["./backend/src"],
+      "@intendly/backend/*": ["./backend/src/*"],
+      "@intendly/web": ["./web"],
+      "@intendly/web/*": ["./web/*"],
+      "@intendly/solver-sdk": ["./solver-sdk/src"],
+      "@intendly/solver-sdk/*": ["./solver-sdk/src/*"],
+      "@intendly/types": ["./types"],
+      "@intendly/types/*": ["./types/*"],
+      "@intendly/shared": ["./shared"],
+      "@intendly/shared/*": ["./shared/*"]
+    },
+    "types": ["node"]
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    "**/*.js",
+    "**/*.jsx"
+  ],
+  "exclude": [
+    "node_modules",
+    "**/node_modules",
+    "**/dist",
+    "**/build",
+    "**/.next",
+    "**/out",
+    "**/coverage",
+    "**/contracts/out",
+    "**/contracts/cache",
+    "**/contracts/broadcast"
+  ],
+  "references": [
+    { "path": "./contracts" },
+    { "path": "./backend" },
+    { "path": "./web" },
+    { "path": "./solver-sdk" }
+  ],
+  "compileOnSave": false
+}

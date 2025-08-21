@@ -1,0 +1,108 @@
+version: '3.8'
+
+services:
+  # PostgreSQL database for testing
+  postgres-test:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: intendly_test
+      POSTGRES_USER: test_user
+      POSTGRES_PASSWORD: test_password
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_test_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test_user -d intendly_test"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for testing
+  redis-test:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Local blockchain for testing (Anvil)
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:latest
+    command: anvil --host 0.0.0.0 --port 8545 --chain-id 31337 --accounts 20 --balance 10000
+    ports:
+      - "8545:8545"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8545 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Test WebSocket server
+  websocket-test:
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: test
+      DB_HOST: postgres-test
+      DB_PORT: 5432
+      DB_NAME: intendly_test
+      DB_USER: test_user
+      DB_PASSWORD: test_password
+      REDIS_URL: redis://redis-test:6379
+      BLOCKCHAIN_RPC_URL: http://anvil:8545
+      JWT_SECRET: test_jwt_secret_key_for_testing_only
+      ENABLE_CORS: "true"
+      LOG_LEVEL: debug
+    ports:
+      - "3003:3002"
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+      anvil:
+        condition: service_healthy
+    command: npm run dev:websocket
+
+  # Test backend services
+  backend-test:
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: test
+      DB_HOST: postgres-test
+      DB_PORT: 5432
+      DB_NAME: intendly_test
+      DB_USER: test_user
+      DB_PASSWORD: test_password
+      REDIS_URL: redis://redis-test:6379
+      BLOCKCHAIN_RPC_URL: http://anvil:8545
+      JWT_SECRET: test_jwt_secret_key_for_testing_only
+      ENABLE_CORS: "true"
+      LOG_LEVEL: debug
+      RELAYER_PORT: 3001
+      COORDINATOR_PORT: 3002
+    ports:
+      - "3004:3001" # Relayer
+      - "3005:3002" # Coordinator
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+      anvil:
+        condition: service_healthy
+    command: npm run dev
+
+volumes:
+  postgres_test_data:
+
+networks:
+  default:
+    name: intendly-test-network

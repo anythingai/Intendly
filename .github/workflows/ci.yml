@@ -1,0 +1,330 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  NODE_VERSION: '18'
+  FOUNDRY_PROFILE: ci
+
+jobs:
+  # =============================================================================
+  # LINT AND FORMAT CHECK
+  # =============================================================================
+  
+  lint-and-format:
+    name: Lint and Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Check Prettier formatting
+        run: npx prettier --check .
+
+      - name: TypeScript type check
+        run: npm run type-check --if-present
+
+  # =============================================================================
+  # SMART CONTRACTS
+  # =============================================================================
+  
+  contracts-test:
+    name: Smart Contracts Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Install dependencies
+        run: cd contracts && forge install
+
+      - name: Run Forge build
+        run: cd contracts && forge build --sizes
+
+      - name: Run Forge tests
+        run: cd contracts && forge test -vvv
+
+      - name: Run Forge coverage
+        run: cd contracts && forge coverage --report lcov
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./contracts/lcov.info
+          flags: contracts
+
+  # =============================================================================
+  # BACKEND SERVICES
+  # =============================================================================
+  
+  backend-test:
+    name: Backend Services Test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: intendly_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        run: cd backend && npm ci
+
+      - name: Run backend build
+        run: cd backend && npm run build
+
+      - name: Run backend tests
+        run: cd backend && npm run test
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgresql://test:test@localhost:5432/intendly_test
+          REDIS_URL: redis://localhost:6379
+          JWT_SECRET: test-jwt-secret
+
+      - name: Run backend integration tests
+        run: cd backend && npm run test:integration
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgresql://test:test@localhost:5432/intendly_test
+          REDIS_URL: redis://localhost:6379
+          JWT_SECRET: test-jwt-secret
+
+  # =============================================================================
+  # FRONTEND WEB APP
+  # =============================================================================
+  
+  web-test:
+    name: Web App Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web dependencies
+        run: cd web && npm ci
+
+      - name: Run web build
+        run: cd web && npm run build
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:3001
+          NEXT_PUBLIC_WS_URL: ws://localhost:3002
+          NEXT_PUBLIC_CHAIN_ID: 196
+
+      - name: Run web tests
+        run: cd web && npm run test
+        env:
+          NODE_ENV: test
+
+      - name: Run web lint
+        run: cd web && npm run lint
+
+  # =============================================================================
+  # SOLVER SDK
+  # =============================================================================
+  
+  solver-sdk-test:
+    name: Solver SDK Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: solver-sdk/package-lock.json
+
+      - name: Install SDK dependencies
+        run: cd solver-sdk && npm ci
+
+      - name: Run SDK build
+        run: cd solver-sdk && npm run build
+
+      - name: Run SDK tests
+        run: cd solver-sdk && npm run test
+
+      - name: Run SDK lint
+        run: cd solver-sdk && npm run lint
+
+  # =============================================================================
+  # SECURITY AUDIT
+  # =============================================================================
+  
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Run npm audit
+        run: |
+          npm audit --audit-level moderate || true
+          cd backend && npm audit --audit-level moderate || true
+          cd ../web && npm audit --audit-level moderate || true
+          cd ../solver-sdk && npm audit --audit-level moderate || true
+
+      - name: Run Slither (Smart Contract Analysis)
+        if: github.event_name == 'push'
+        uses: crytic/slither-action@v0.3.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          slither-config: contracts/slither.config.json
+          fail-on: medium
+          slither-version: 0.9.6
+
+  # =============================================================================
+  # BUILD AND DEPLOY (on main branch only)
+  # =============================================================================
+  
+  build-and-deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [lint-and-format, contracts-test, backend-test, web-test, solver-sdk-test]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build all packages
+        run: npm run build
+
+      - name: Build Docker images
+        run: |
+          docker build -t intendly-backend:latest ./backend
+          docker build -t intendly-web:latest ./web
+
+      - name: Run Docker security scan
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            -v $PWD:/tmp/.cache/ aquasec/trivy:latest image intendly-backend:latest
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            -v $PWD:/tmp/.cache/ aquasec/trivy:latest image intendly-web:latest
+
+      # Add deployment steps here based on your deployment strategy
+      # - name: Deploy to staging
+      #   run: echo "Deploy to staging environment"
+      
+      # - name: Deploy to production
+      #   if: success()
+      #   run: echo "Deploy to production environment"
+
+  # =============================================================================
+  # PERFORMANCE TESTS
+  # =============================================================================
+  
+  performance-test:
+    name: Performance Tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [backend-test]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install k6
+        run: |
+          curl https://github.com/grafana/k6/releases/download/v0.46.0/k6-v0.46.0-linux-amd64.tar.gz -L | tar xvz --strip-components 1
+
+      - name: Run performance tests
+        run: |
+          # Add k6 performance test scripts here
+          echo "Performance tests would run here"
+
+  # =============================================================================
+  # NOTIFICATION
+  # =============================================================================
+  
+  notify:
+    name: Notify Results
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [lint-and-format, contracts-test, backend-test, web-test, solver-sdk-test, security-audit]
+    steps:
+      - name: Notify on success
+        if: ${{ needs.lint-and-format.result == 'success' && needs.contracts-test.result == 'success' && needs.backend-test.result == 'success' && needs.web-test.result == 'success' && needs.solver-sdk-test.result == 'success' }}
+        run: echo "All tests passed! ✅"
+
+      - name: Notify on failure
+        if: ${{ needs.lint-and-format.result == 'failure' || needs.contracts-test.result == 'failure' || needs.backend-test.result == 'failure' || needs.web-test.result == 'failure' || needs.solver-sdk-test.result == 'failure' }}
+        run: echo "Some tests failed! ❌"

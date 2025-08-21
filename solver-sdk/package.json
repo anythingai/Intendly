@@ -1,0 +1,93 @@
+{
+  "name": "@intendly/solver-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for building solvers for Intent-Based Trading Aggregator",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./types": {
+      "import": "./dist/types/index.mjs",
+      "require": "./dist/types/index.js",
+      "types": "./dist/types/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "package.json"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "build:watch": "tsup --watch",
+    "dev": "tsup --watch",
+    "clean": "rimraf dist",
+    "test": "vitest",
+    "test:watch": "vitest --watch",
+    "test:coverage": "vitest --coverage",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
+    "format": "prettier --write src/**/*.ts",
+    "type-check": "tsc --noEmit",
+    "prepublishOnly": "npm run clean && npm run build",
+    "docs:build": "typedoc",
+    "docs:serve": "typedoc --watch"
+  },
+  "dependencies": {
+    "viem": "^1.19.9",
+    "abitype": "^0.10.0",
+    "ws": "^8.14.2",
+    "axios": "^1.6.2",
+    "ethers": "^6.8.1",
+    "eventemitter3": "^5.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/ws": "^8.5.10",
+    "typescript": "^5.3.2",
+    "tsup": "^8.0.1",
+    "vitest": "^1.0.4",
+    "@vitest/coverage-v8": "^1.0.4",
+    "eslint": "^8.54.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "eslint-config-prettier": "^9.0.0",
+    "eslint-plugin-prettier": "^5.0.1",
+    "prettier": "^3.1.0",
+    "rimraf": "^5.0.5",
+    "typedoc": "^0.25.4"
+  },
+  "peerDependencies": {
+    "typescript": ">=5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourorg/intent-based-trading-aggregator.git",
+    "directory": "solver-sdk"
+  },
+  "keywords": [
+    "defi",
+    "solver",
+    "intent-based",
+    "trading",
+    "sdk",
+    "typescript",
+    "web3",
+    "ethereum",
+    "l2"
+  ],
+  "author": "Intent Trading Team",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  }
+}

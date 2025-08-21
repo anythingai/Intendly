@@ -1,0 +1,65 @@
+{
+  "name": "intent-based-trading-aggregator",
+  "version": "0.1.0",
+  "description": "Intent-Based Trading Aggregator on L2s - A competitive solver marketplace for optimal DeFi execution",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "contracts",
+    "backend",
+    "web", 
+    "solver-sdk"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "lint:fix": "npm run lint:fix --workspaces --if-present",
+    "clean": "npm run clean --workspaces --if-present",
+    "dev": "concurrently \"npm run dev -w backend\" \"npm run dev -w web\"",
+    "dev:contracts": "npm run dev -w contracts",
+    "dev:backend": "npm run dev -w backend",
+    "dev:web": "npm run dev -w web",
+    "dev:solver": "npm run dev -w solver-sdk",
+    "start": "npm run start --workspaces --if-present",
+    "setup": "npm install && npm run build",
+    "setup:local": "./scripts/setup-local.sh",
+    "deploy:contracts": "./scripts/deploy-contracts.sh",
+    "test:integration": "npm run test:integration -w backend",
+    "docker:build": "docker-compose build",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "concurrently": "^8.2.2",
+    "eslint": "^8.54.0",
+    "eslint-config-prettier": "^9.0.0",
+    "eslint-plugin-prettier": "^5.0.1",
+    "prettier": "^3.1.0",
+    "typescript": "^5.3.2"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourorg/intent-based-trading-aggregator.git"
+  },
+  "keywords": [
+    "defi",
+    "intent-based",
+    "trading",
+    "aggregator",
+    "l2",
+    "x-layer",
+    "ethereum",
+    "solidity",
+    "typescript"
+  ],
+  "author": "Intent Trading Team",
+  "license": "MIT"
+}

@@ -1,0 +1,334 @@
+# Intent-Based Trading Aggregator - Promtail Configuration
+# Log collection and forwarding to Loki
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  # Application logs from backend services
+  - job_name: backend-logs
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: backend
+          service: intendly
+          environment: production
+          __path__: /var/log/backend/*.log
+
+    pipeline_stages:
+      # Parse JSON logs
+      - json:
+          expressions:
+            level: level
+            timestamp: timestamp
+            service: service
+            message: message
+            request_id: request_id
+            user_address: user_address
+            intent_id: intent_id
+            solver_id: solver_id
+
+      # Extract log level
+      - labels:
+          level:
+          service:
+          request_id:
+
+      # Parse timestamp
+      - timestamp:
+          source: timestamp
+          format: RFC3339
+
+      # Add additional labels based on content
+      - match:
+          selector: '{job="backend"} |~ "ERROR|FATAL"'
+          stages:
+            - labels:
+                severity: error
+
+      - match:
+          selector: '{job="backend"} |~ "WARN"'
+          stages:
+            - labels:
+                severity: warning
+
+      # Extract structured data for specific log types
+      - match:
+          selector: '{job="backend"} |~ "INTENT_CREATED"'
+          stages:
+            - json:
+                expressions:
+                  intent_id: intent_id
+                  token_in: token_in
+                  token_out: token_out
+                  amount_in: amount_in
+            - labels:
+                intent_id:
+                token_in:
+                token_out:
+
+      - match:
+          selector: '{job="backend"} |~ "SETTLEMENT_COMPLETED"'
+          stages:
+            - json:
+                expressions:
+                  intent_id: intent_id
+                  solver: solver
+                  tx_hash: tx_hash
+                  amount_out: amount_out
+            - labels:
+                intent_id:
+                solver:
+
+  # Nginx access logs
+  - job_name: nginx-access
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: nginx
+          service: intendly
+          environment: production
+          __path__: /var/log/nginx/access.log
+
+    pipeline_stages:
+      # Parse nginx JSON logs
+      - json:
+          expressions:
+            time_local: time_local
+            remote_addr: remote_addr
+            request: request
+            status: status
+            body_bytes_sent: body_bytes_sent
+            request_time: request_time
+            upstream_response_time: upstream_response_time
+
+      - labels:
+          status:
+          remote_addr:
+
+      # Parse timestamp
+      - timestamp:
+          source: time_local
+          format: "02/Jan/2006:15:04:05 -0700"
+
+      # Categorize by response status
+      - match:
+          selector: '{job="nginx"} |~ "status\":\"[45]"'
+          stages:
+            - labels:
+                error_class: client_server_error
+
+      - match:
+          selector: '{job="nginx"} |~ "status\":\"5"'
+          stages:
+            - labels:
+                error_class: server_error
+
+  # Nginx error logs
+  - job_name: nginx-error
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: nginx-error
+          service: intendly
+          environment: production
+          __path__: /var/log/nginx/error.log
+
+    pipeline_stages:
+      # Parse nginx error logs
+      - regex:
+          expression: '^(?P<timestamp>\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}) \[(?P<level>\w+)\] (?P<pid>\d+)#(?P<tid>\d+): (?P<message>.*)'
+
+      - labels:
+          level:
+          pid:
+
+      - timestamp:
+          source: timestamp
+          format: "2006/01/02 15:04:05"
+
+  # PostgreSQL logs
+  - job_name: postgresql
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: postgresql
+          service: intendly
+          environment: production
+          __path__: /var/log/postgresql/*.log
+
+    pipeline_stages:
+      # Parse PostgreSQL logs
+      - regex:
+          expression: '^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} \w+) \[(?P<pid>\d+)\] (?P<level>\w+): (?P<message>.*)'
+
+      - labels:
+          level:
+          pid:
+
+      - timestamp:
+          source: timestamp
+          format: "2006-01-02 15:04:05.000 MST"
+
+      # Extract slow query information
+      - match:
+          selector: '{job="postgresql"} |~ "duration:"'
+          stages:
+            - regex:
+                expression: 'duration: (?P<duration>\d+\.\d+) ms'
+            - labels:
+                query_type: slow_query
+                duration:
+
+  # Redis logs
+  - job_name: redis
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: redis
+          service: intendly
+          environment: production
+          __path__: /var/log/redis/*.log
+
+    pipeline_stages:
+      # Parse Redis logs
+      - regex:
+          expression: '^(?P<pid>\d+):(?P<role>\w) (?P<timestamp>\d{2} \w{3} \d{4} \d{2}:\d{2}:\d{2}\.\d{3}) (?P<level>.) (?P<message>.*)'
+
+      - labels:
+          level:
+          role:
+          pid:
+
+      - timestamp:
+          source: timestamp
+          format: "02 Jan 2006 15:04:05.000"
+
+  # Kubernetes container logs
+  - job_name: kubernetes-pods
+    kubernetes_sd_configs:
+      - role: pod
+
+    relabel_configs:
+      # Only scrape logs from intendly namespace
+      - source_labels:
+          - __meta_kubernetes_namespace
+        action: keep
+        regex: intendly
+
+      # Add pod metadata as labels
+      - source_labels:
+          - __meta_kubernetes_pod_name
+        target_label: pod
+
+      - source_labels:
+          - __meta_kubernetes_pod_container_name
+        target_label: container
+
+      - source_labels:
+          - __meta_kubernetes_pod_label_app
+        target_label: app
+
+      - source_labels:
+          - __meta_kubernetes_pod_label_version
+        target_label: version
+
+      # Set log path
+      - source_labels:
+          - __meta_kubernetes_pod_uid
+          - __meta_kubernetes_pod_container_name
+        target_label: __path__
+        separator: /
+        replacement: /var/log/pods/*$1/*.log
+
+    pipeline_stages:
+      # Parse Docker/containerd logs
+      - cri: {}
+
+      # Add additional labels
+      - labels:
+          stream:
+
+      # Extract structured logs from JSON
+      - match:
+          selector: '{container="backend-relayer"}'
+          stages:
+            - json:
+                expressions:
+                  level: level
+                  service: service
+                  request_id: request_id
+                  message: message
+            - labels:
+                level:
+                service:
+
+      # Extract WebSocket connection logs
+      - match:
+          selector: '{container="websocket-server"}'
+          stages:
+            - json:
+                expressions:
+                  event_type: event_type
+                  connection_id: connection_id
+                  user_address: user_address
+            - labels:
+                event_type:
+
+  # System logs (for Docker environment)
+  - job_name: docker-containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+
+    relabel_configs:
+      # Only scrape intendly containers
+      - source_labels:
+          - __meta_docker_container_label_com_docker_compose_project
+        action: keep
+        regex: intendly
+
+      - source_labels:
+          - __meta_docker_container_name
+        target_label: container
+
+      - source_labels:
+          - __meta_docker_container_label_com_docker_compose_service
+        target_label: service
+
+    pipeline_stages:
+      # Parse Docker logs
+      - docker: {}
+
+      # Add service-specific parsing
+      - match:
+          selector: '{service="backend"}'
+          stages:
+            - json:
+                expressions:
+                  level: level
+                  timestamp: timestamp
+                  message: message
+            - labels:
+                level:
+
+# Global configuration
+global:
+  scrape_interval: 15s
+
+# Limits configuration
+limits_config:
+  readline_rate: 10000
+  readline_burst: 20000

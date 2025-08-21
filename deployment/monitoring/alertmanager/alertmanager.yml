@@ -1,0 +1,307 @@
+# Intent-Based Trading Aggregator - Alertmanager Configuration
+# Alert routing and notification configuration for production
+
+global:
+  # Global configuration
+  smtp_smarthost: 'smtp.sendgrid.net:587'
+  smtp_from: 'alerts@intendly.xyz'
+  smtp_auth_username: 'apikey'
+  smtp_auth_password: '${SENDGRID_API_KEY}'
+  
+  # Slack webhook URL (set via environment variable)
+  slack_api_url: '${SLACK_WEBHOOK_URL}'
+  
+  # PagerDuty integration key
+  pagerduty_url: 'https://events.pagerduty.com/v2/enqueue'
+
+# Templates for alert messages
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'
+
+# Alert routing rules
+route:
+  # Default route settings
+  group_by: ['alertname', 'cluster', 'service']
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 1h
+  receiver: 'default-receiver'
+
+  # Route for critical alerts
+  routes:
+    # Critical system alerts - immediate PagerDuty notification
+    - match:
+        severity: critical
+      receiver: 'pagerduty-critical'
+      group_wait: 10s
+      group_interval: 5m
+      repeat_interval: 5m
+      continue: true
+
+    # Critical alerts also go to Slack
+    - match:
+        severity: critical
+      receiver: 'slack-critical'
+      group_wait: 15s
+      group_interval: 5m
+      repeat_interval: 15m
+
+    # High priority alerts - Slack notification
+    - match:
+        severity: warning
+      receiver: 'slack-warnings'
+      group_wait: 30s
+      group_interval: 10m
+      repeat_interval: 1h
+
+    # Business metrics alerts
+    - match:
+        component: business
+      receiver: 'slack-business'
+      group_wait: 1m
+      group_interval: 15m
+      repeat_interval: 4h
+
+    # Infrastructure alerts
+    - match:
+        component: infrastructure
+      receiver: 'slack-infrastructure'
+      group_wait: 1m
+      group_interval: 10m
+      repeat_interval: 2h
+
+    # Security alerts - immediate notification
+    - match:
+        component: security
+      receiver: 'security-team'
+      group_wait: 5s
+      group_interval: 1m
+      repeat_interval: 5m
+
+    # Application alerts
+    - match:
+        component: application
+      receiver: 'slack-application'
+      group_wait: 30s
+      group_interval: 10m
+      repeat_interval: 1h
+
+    # Database alerts
+    - match:
+        component: database
+      receiver: 'database-team'
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 30m
+
+# Alert receivers/notification channels
+receivers:
+  # Default receiver (fallback)
+  - name: 'default-receiver'
+    email_configs:
+      - to: 'team@intendly.xyz'
+        subject: '[ALERT] {{ .GroupLabels.alertname }}'
+        body: |
+          {{ range .Alerts }}
+          Alert: {{ .Annotations.summary }}
+          Description: {{ .Annotations.description }}
+          Severity: {{ .Labels.severity }}
+          Instance: {{ .Labels.instance }}
+          {{ end }}
+
+  # PagerDuty for critical alerts
+  - name: 'pagerduty-critical'
+    pagerduty_configs:
+      - service_key: '${PAGERDUTY_SERVICE_KEY}'
+        description: '{{ .GroupLabels.alertname }}: {{ .CommonAnnotations.summary }}'
+        details:
+          alert_count: '{{ len .Alerts }}'
+          alerts: |
+            {{ range .Alerts }}
+            - Alert: {{ .Annotations.summary }}
+              Instance: {{ .Labels.instance }}
+              Severity: {{ .Labels.severity }}
+            {{ end }}
+
+  # Slack for critical alerts
+  - name: 'slack-critical'
+    slack_configs:
+      - api_url: '${SLACK_WEBHOOK_URL}'
+        channel: '#production-alerts'
+        username: 'AlertManager'
+        icon_emoji: ':fire:'
+        title: '🚨 CRITICAL ALERT 🚨'
+        text: |
+          {{ range .Alerts }}
+          *Alert:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Severity:* {{ .Labels.severity }}
+          *Instance:* {{ .Labels.instance }}
+          *Runbook:* {{ .Annotations.runbook_url }}
+          {{ end }}
+        color: 'danger'
+
+  # Slack for warnings
+  - name: 'slack-warnings'
+    slack_configs:
+      - api_url: '${SLACK_WEBHOOK_URL}'
+        channel: '#production-alerts'
+        username: 'AlertManager'
+        icon_emoji: ':warning:'
+        title: '⚠️ Warning Alert'
+        text: |
+          {{ range .Alerts }}
+          *Alert:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Severity:* {{ .Labels.severity }}
+          *Instance:* {{ .Labels.instance }}
+          {{ end }}
+        color: 'warning'
+
+  # Slack for business metrics
+  - name: 'slack-business'
+    slack_configs:
+      - api_url: '${SLACK_WEBHOOK_URL}'
+        channel: '#business-metrics'
+        username: 'AlertManager'
+        icon_emoji: ':chart_with_upwards_trend:'
+        title: '📊 Business Metrics Alert'
+        text: |
+          {{ range .Alerts }}
+          *Alert:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Impact:* Business Operations
+          {{ end }}
+        color: '#439FE0'
+
+  # Slack for infrastructure alerts
+  - name: 'slack-infrastructure'
+    slack_configs:
+      - api_url: '${SLACK_WEBHOOK_URL}'
+        channel: '#infrastructure'
+        username: 'AlertManager'
+        icon_emoji: ':computer:'
+        title: '🖥️ Infrastructure Alert'
+        text: |
+          {{ range .Alerts }}
+          *Alert:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Component:* {{ .Labels.component }}
+          *Instance:* {{ .Labels.instance }}
+          {{ end }}
+        color: '#FF9500'
+
+  # Security team notifications
+  - name: 'security-team'
+    slack_configs:
+      - api_url: '${SLACK_WEBHOOK_URL}'
+        channel: '#security-alerts'
+        username: 'SecurityAlert'
+        icon_emoji: ':shield:'
+        title: '🛡️ SECURITY ALERT'
+        text: |
+          {{ range .Alerts }}
+          *Alert:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Severity:* {{ .Labels.severity }}
+          *Instance:* {{ .Labels.instance }}
+          *Immediate Action Required*
+          {{ end }}
+        color: 'danger'
+    
+    email_configs:
+      - to: 'security@intendly.xyz'
+        subject: '[SECURITY ALERT] {{ .GroupLabels.alertname }}'
+        body: |
+          SECURITY ALERT DETECTED
+          
+          {{ range .Alerts }}
+          Alert: {{ .Annotations.summary }}
+          Description: {{ .Annotations.description }}
+          Severity: {{ .Labels.severity }}
+          Instance: {{ .Labels.instance }}
+          Time: {{ .StartsAt.Format "2006-01-02 15:04:05 UTC" }}
+          {{ end }}
+          
+          Immediate investigation required.
+
+  # Database team notifications
+  - name: 'database-team'
+    slack_configs:
+      - api_url: '${SLACK_WEBHOOK_URL}'
+        channel: '#database-alerts'
+        username: 'AlertManager'
+        icon_emoji: ':database:'
+        title: '🗄️ Database Alert'
+        text: |
+          {{ range .Alerts }}
+          *Alert:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Database:* {{ .Labels.instance }}
+          *Component:* {{ .Labels.component }}
+          {{ end }}
+        color: '#FF6B6B'
+
+  # Application team notifications
+  - name: 'slack-application'
+    slack_configs:
+      - api_url: '${SLACK_WEBHOOK_URL}'
+        channel: '#application-alerts'
+        username: 'AlertManager'
+        icon_emoji: ':gear:'
+        title: '⚙️ Application Alert'
+        text: |
+          {{ range .Alerts }}
+          *Alert:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Service:* {{ .Labels.service }}
+          *Instance:* {{ .Labels.instance }}
+          {{ end }}
+        color: '#4ECDC4'
+
+# Inhibition rules to reduce noise
+inhibit_rules:
+  # Inhibit warning alerts when critical alerts are firing for the same service
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'service', 'instance']
+
+  # Inhibit node alerts when the entire cluster is down
+  - source_match:
+      alertname: 'ClusterDown'
+    target_match_re:
+      alertname: 'Node.*'
+
+  # Inhibit individual service alerts when the entire node is down
+  - source_match:
+      alertname: 'NodeDown'
+    target_match_re:
+      alertname: 'Service.*'
+    equal: ['instance']
+
+# Mute rules for maintenance windows
+mute_time_intervals:
+  # Scheduled maintenance windows
+  - name: 'maintenance-window'
+    time_intervals:
+      - times:
+          - start_time: '02:00'
+            end_time: '04:00'
+        weekdays: ['sunday']
+        location: 'UTC'
+      
+  # Business hours for non-critical alerts
+  - name: 'business-hours'
+    time_intervals:
+      - times:
+          - start_time: '09:00'
+            end_time: '17:00'
+        weekdays: ['monday:friday']
+        location: 'UTC'
+
+# Global configuration for alert processing
+group_interval: 10s
+repeat_interval: 1h
+receiver: 'default-receiver'

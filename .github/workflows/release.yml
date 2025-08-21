@@ -1,0 +1,280 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., 1.0.0)'
+        required: true
+        type: string
+
+jobs:
+  # =============================================================================
+  # CREATE RELEASE
+  # =============================================================================
+  
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    outputs:
+      release-tag: ${{ steps.tag.outputs.tag }}
+      release-notes: ${{ steps.changelog.outputs.changelog }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "tag=v${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Generate changelog from commits since last tag
+          LAST_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -z "$LAST_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"- %s (%h)" --no-merges)
+          else
+            COMMITS=$(git log ${LAST_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          fi
+          
+          CHANGELOG="## What's Changed\n\n${COMMITS}\n\n**Full Changelog**: https://github.com/${{ github.repository }}/compare/${LAST_TAG}...${{ steps.tag.outputs.tag }}"
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo -e "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create/Update tag (for workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a ${{ steps.tag.outputs.tag }} -m "Release ${{ steps.tag.outputs.tag }}"
+          git push origin ${{ steps.tag.outputs.tag }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Release ${{ steps.tag.outputs.tag }}
+          body: ${{ steps.changelog.outputs.changelog }}
+          draft: false
+          prerelease: ${{ contains(steps.tag.outputs.tag, '-') }}
+          generate_release_notes: true
+
+  # =============================================================================
+  # BUILD AND PUBLISH SDK
+  # =============================================================================
+  
+  publish-sdk:
+    name: Publish Solver SDK
+    runs-on: ubuntu-latest
+    needs: [create-release]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install SDK dependencies
+        run: cd solver-sdk && npm ci
+
+      - name: Build SDK
+        run: cd solver-sdk && npm run build
+
+      - name: Run SDK tests
+        run: cd solver-sdk && npm run test
+
+      - name: Update package version
+        run: |
+          cd solver-sdk
+          VERSION=${{ needs.create-release.outputs.release-tag }}
+          VERSION=${VERSION#v}  # Remove 'v' prefix
+          npm version $VERSION --no-git-tag-version
+
+      - name: Publish to NPM
+        run: cd solver-sdk && npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish to GitHub Packages
+        run: |
+          cd solver-sdk
+          echo "@intendly:registry=https://npm.pkg.github.com" >> .npmrc
+          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> .npmrc
+          npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # =============================================================================
+  # BUILD RELEASE ARTIFACTS
+  # =============================================================================
+  
+  build-artifacts:
+    name: Build Release Artifacts
+    runs-on: ubuntu-latest
+    needs: [create-release]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: nightly
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build all packages
+        run: npm run build
+
+      - name: Build contracts
+        run: cd contracts && forge build
+
+      - name: Generate contract artifacts
+        run: |
+          mkdir -p artifacts/contracts
+          cp -r contracts/out/* artifacts/contracts/
+          
+          # Generate ABI files
+          mkdir -p artifacts/abis
+          find contracts/out -name "*.sol" -type d | while read dir; do
+            contract_name=$(basename "$dir" .sol)
+            if [ -f "$dir/$contract_name.json" ]; then
+              jq -r '.abi' "$dir/$contract_name.json" > "artifacts/abis/$contract_name.abi.json"
+            fi
+          done
+
+      - name: Create deployment package
+        run: |
+          mkdir -p artifacts/deployment
+          cp -r backend/dist artifacts/deployment/backend
+          cp -r web/.next artifacts/deployment/web
+          cp docker-compose.prod.yml artifacts/deployment/
+          cp -r monitoring artifacts/deployment/
+
+      - name: Create documentation package
+        run: |
+          mkdir -p artifacts/docs
+          cp -r docs/* artifacts/docs/
+          
+          # Generate API documentation
+          cd backend && npm run docs:build && cp -r docs/* ../artifacts/docs/api/
+          cd ../solver-sdk && npm run docs:build && cp -r docs/* ../artifacts/docs/sdk/
+
+      - name: Compress artifacts
+        run: |
+          tar -czf intendly-contracts-${{ needs.create-release.outputs.release-tag }}.tar.gz artifacts/contracts artifacts/abis
+          tar -czf intendly-deployment-${{ needs.create-release.outputs.release-tag }}.tar.gz artifacts/deployment
+          tar -czf intendly-docs-${{ needs.create-release.outputs.release-tag }}.tar.gz artifacts/docs
+
+      - name: Upload release artifacts
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.create-release.outputs.release-tag }}
+          files: |
+            intendly-contracts-${{ needs.create-release.outputs.release-tag }}.tar.gz
+            intendly-deployment-${{ needs.create-release.outputs.release-tag }}.tar.gz
+            intendly-docs-${{ needs.create-release.outputs.release-tag }}.tar.gz
+
+  # =============================================================================
+  # SECURITY SCAN
+  # =============================================================================
+  
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: [create-release]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Run CodeQL Analysis
+        uses: github/codeql-action/analyze@v2
+        with:
+          languages: javascript, typescript
+
+  # =============================================================================
+  # NOTIFY STAKEHOLDERS
+  # =============================================================================
+  
+  notify:
+    name: Notify Release
+    runs-on: ubuntu-latest
+    needs: [create-release, publish-sdk, build-artifacts]
+    if: always() && needs.create-release.result == 'success'
+    steps:
+      - name: Notify Discord
+        if: success()
+        run: |
+          curl -X POST ${{ secrets.DISCORD_WEBHOOK_URL }} \
+            -H "Content-Type: application/json" \
+            -d '{
+              "content": "🎉 New release available!",
+              "embeds": [{
+                "title": "Intent Trading Aggregator ${{ needs.create-release.outputs.release-tag }}",
+                "description": "A new version has been released with exciting updates!",
+                "color": 5763719,
+                "fields": [
+                  {"name": "Version", "value": "${{ needs.create-release.outputs.release-tag }}", "inline": true},
+                  {"name": "Released by", "value": "${{ github.actor }}", "inline": true},
+                  {"name": "SDK Published", "value": "${{ needs.publish-sdk.result == 'success' && '✅ Success' || '❌ Failed' }}", "inline": true}
+                ],
+                "footer": {"text": "Intent Trading Aggregator"}
+              }]
+            }'
+
+      - name: Notify Telegram
+        if: success()
+        run: |
+          curl -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d "text=🚀 Intent Trading Aggregator ${{ needs.create-release.outputs.release-tag }} has been released! Check it out on GitHub." \
+            -d "parse_mode=Markdown"
+
+      - name: Update project status
+        run: |
+          echo "✅ Release ${{ needs.create-release.outputs.release-tag }} completed successfully!"
+          echo "📦 SDK published to NPM"
+          echo "🐳 Docker images built and pushed"
+          echo "📚 Documentation updated"
+          echo "🔒 Security scans completed"

@@ -1,0 +1,181 @@
+# Intent-Based Trading Aggregator - Development Environment
+# Run with: docker-compose up -d
+
+version: '3.8'
+
+services:
+  # =============================================================================
+  # DATABASE SERVICES
+  # =============================================================================
+  
+  postgres:
+    image: postgres:14-alpine
+    container_name: intendly-postgres
+    environment:
+      POSTGRES_DB: intendly
+      POSTGRES_USER: intendly
+      POSTGRES_PASSWORD: dev_password_123
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/migrations:/docker-entrypoint-initdb.d
+    networks:
+      - intendly-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U intendly -d intendly"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: intendly-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - intendly-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: redis-server --appendonly yes
+
+  # =============================================================================
+  # BACKEND SERVICES
+  # =============================================================================
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: development
+    container_name: intendly-backend
+    environment:
+      NODE_ENV: development
+      API_PORT: 3001
+      WS_PORT: 3002
+      DATABASE_URL: postgresql://intendly:dev_password_123@postgres:5432/intendly
+      REDIS_URL: redis://redis:6379
+      CHAIN_ID: 196
+      RPC_URL: https://xlayerrpc.okx.com
+      JWT_SECRET: dev-jwt-secret-for-development-only
+      LOG_LEVEL: info
+      ENABLE_DEBUG: "true"
+    ports:
+      - "3001:3001"
+      - "3002:3002"
+    volumes:
+      - ./backend/src:/app/src
+      - ./backend/package.json:/app/package.json
+      - ./backend/tsconfig.json:/app/tsconfig.json
+      - backend_logs:/app/logs
+    networks:
+      - intendly-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # =============================================================================
+  # MONITORING SERVICES
+  # =============================================================================
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: intendly-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    networks:
+      - intendly-network
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: intendly-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana:/etc/grafana/provisioning
+    networks:
+      - intendly-network
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+  # =============================================================================
+  # DEVELOPMENT TOOLS
+  # =============================================================================
+
+  adminer:
+    image: adminer
+    container_name: intendly-adminer
+    ports:
+      - "8080:8080"
+    networks:
+      - intendly-network
+    restart: unless-stopped
+    depends_on:
+      - postgres
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: intendly-redis-commander
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    ports:
+      - "8081:8081"
+    networks:
+      - intendly-network
+    restart: unless-stopped
+    depends_on:
+      - redis
+
+# =============================================================================
+# NETWORKS
+# =============================================================================
+
+networks:
+  intendly-network:
+    driver: bridge
+    name: intendly-network
+
+# =============================================================================
+# VOLUMES
+# =============================================================================
+
+volumes:
+  postgres_data:
+    name: intendly-postgres-data
+  redis_data:
+    name: intendly-redis-data
+  backend_logs:
+    name: intendly-backend-logs
+  prometheus_data:
+    name: intendly-prometheus-data
+  grafana_data:
+    name: intendly-grafana-data

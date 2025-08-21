@@ -1,0 +1,405 @@
+# Intent-Based Trading Aggregator - Complete Demo Environment
+# This orchestrates all services needed for comprehensive demo validation
+
+version: '3.8'
+
+services:
+  # Database Services
+  postgres-demo:
+    image: postgres:15-alpine
+    container_name: intendly-postgres-demo
+    environment:
+      POSTGRES_DB: intendly_demo
+      POSTGRES_USER: demo_user
+      POSTGRES_PASSWORD: demo_password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_demo_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - demo-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo_user -d intendly_demo"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis-demo:
+    image: redis:7-alpine
+    container_name: intendly-redis-demo
+    ports:
+      - "6380:6379"
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_demo_data:/data
+    networks:
+      - demo-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Blockchain Services
+  anvil-demo:
+    image: ghcr.io/foundry-rs/foundry:latest
+    container_name: intendly-anvil-demo
+    ports:
+      - "8545:8545"
+    command: >
+      anvil 
+      --host 0.0.0.0 
+      --port 8545 
+      --chain-id 31337
+      --accounts 10 
+      --balance 10000
+      --gas-limit 30000000
+      --gas-price 20000000000
+      --block-time 2
+      --fork-url ${FORK_RPC_URL:-}
+    networks:
+      - demo-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8545 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Backend Services
+  relayer-demo:
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    container_name: intendly-relayer-demo
+    environment:
+      NODE_ENV: demo
+      PORT: 3001
+      DATABASE_URL: postgresql://demo_user:demo_password@postgres-demo:5432/intendly_demo
+      REDIS_URL: redis://redis-demo:6379
+      BLOCKCHAIN_RPC_URL: http://anvil-demo:8545
+      CHAIN_ID: 31337
+      WEBSOCKET_URL: ws://websocket-demo:3002
+      LOG_LEVEL: info
+      DEMO_MODE: "true"
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres-demo:
+        condition: service_healthy
+      redis-demo:
+        condition: service_healthy
+      anvil-demo:
+        condition: service_healthy
+    networks:
+      - demo-network
+    volumes:
+      - ../../backend:/app
+      - /app/node_modules
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3001/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  coordinator-demo:
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    container_name: intendly-coordinator-demo
+    environment:
+      NODE_ENV: demo
+      PORT: 3001
+      DATABASE_URL: postgresql://demo_user:demo_password@postgres-demo:5432/intendly_demo
+      REDIS_URL: redis://redis-demo:6379
+      BLOCKCHAIN_RPC_URL: http://anvil-demo:8545
+      CHAIN_ID: 31337
+      WEBSOCKET_URL: ws://websocket-demo:3002
+      LOG_LEVEL: info
+      DEMO_MODE: "true"
+      SERVICE_TYPE: coordinator
+    depends_on:
+      postgres-demo:
+        condition: service_healthy
+      redis-demo:
+        condition: service_healthy
+      relayer-demo:
+        condition: service_healthy
+    networks:
+      - demo-network
+    volumes:
+      - ../../backend:/app
+      - /app/node_modules
+
+  websocket-demo:
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    container_name: intendly-websocket-demo
+    environment:
+      NODE_ENV: demo
+      PORT: 3002
+      REDIS_URL: redis://redis-demo:6379
+      LOG_LEVEL: info
+      DEMO_MODE: "true"
+      SERVICE_TYPE: websocket
+    ports:
+      - "3002:3002"
+    depends_on:
+      redis-demo:
+        condition: service_healthy
+    networks:
+      - demo-network
+    volumes:
+      - ../../backend:/app
+      - /app/node_modules
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3002/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Frontend Service
+  frontend-demo:
+    build:
+      context: ../../web
+      dockerfile: Dockerfile
+    container_name: intendly-frontend-demo
+    environment:
+      NODE_ENV: demo
+      NEXT_PUBLIC_CHAIN_ID: 31337
+      NEXT_PUBLIC_RPC_URL: http://localhost:8545
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+      NEXT_PUBLIC_WS_URL: ws://localhost:3002
+      NEXT_PUBLIC_DEMO_MODE: "true"
+    ports:
+      - "3000:3000"
+    depends_on:
+      relayer-demo:
+        condition: service_healthy
+      websocket-demo:
+        condition: service_healthy
+    networks:
+      - demo-network
+    volumes:
+      - ../../web:/app
+      - /app/node_modules
+      - /app/.next
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+
+  # Demo Solver Instances
+  solver-1-demo:
+    build:
+      context: ../../solver-sdk
+      dockerfile: Dockerfile
+    container_name: intendly-solver-1-demo
+    environment:
+      NODE_ENV: demo
+      SOLVER_ID: solver-1
+      SOLVER_NAME: "Uniswap V3 Solver"
+      SOLVER_STRATEGY: uniswap-v3
+      SOLVER_PRIVATE_KEY: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+      COORDINATOR_URL: http://relayer-demo:3001
+      WS_URL: ws://websocket-demo:3002
+      BLOCKCHAIN_RPC_URL: http://anvil-demo:8545
+      CHAIN_ID: 31337
+      LOG_LEVEL: info
+      DEMO_MODE: "true"
+    depends_on:
+      relayer-demo:
+        condition: service_healthy
+      websocket-demo:
+        condition: service_healthy
+    networks:
+      - demo-network
+    volumes:
+      - ../../solver-sdk:/app
+      - /app/node_modules
+
+  solver-2-demo:
+    build:
+      context: ../../solver-sdk
+      dockerfile: Dockerfile
+    container_name: intendly-solver-2-demo
+    environment:
+      NODE_ENV: demo
+      SOLVER_ID: solver-2
+      SOLVER_NAME: "1inch Aggregator Solver"
+      SOLVER_STRATEGY: 1inch-aggregation
+      SOLVER_PRIVATE_KEY: "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a"
+      COORDINATOR_URL: http://relayer-demo:3001
+      WS_URL: ws://websocket-demo:3002
+      BLOCKCHAIN_RPC_URL: http://anvil-demo:8545
+      CHAIN_ID: 31337
+      LOG_LEVEL: info
+      DEMO_MODE: "true"
+    depends_on:
+      relayer-demo:
+        condition: service_healthy
+      websocket-demo:
+        condition: service_healthy
+    networks:
+      - demo-network
+    volumes:
+      - ../../solver-sdk:/app
+      - /app/node_modules
+
+  solver-3-demo:
+    build:
+      context: ../../solver-sdk
+      dockerfile: Dockerfile
+    container_name: intendly-solver-3-demo
+    environment:
+      NODE_ENV: demo
+      SOLVER_ID: solver-3
+      SOLVER_NAME: "Multi-DEX Solver"
+      SOLVER_STRATEGY: multi-dex
+      SOLVER_PRIVATE_KEY: "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6"
+      COORDINATOR_URL: http://relayer-demo:3001
+      WS_URL: ws://websocket-demo:3002
+      BLOCKCHAIN_RPC_URL: http://anvil-demo:8545
+      CHAIN_ID: 31337
+      LOG_LEVEL: info
+      DEMO_MODE: "true"
+    depends_on:
+      relayer-demo:
+        condition: service_healthy
+      websocket-demo:
+        condition: service_healthy
+    networks:
+      - demo-network
+    volumes:
+      - ../../solver-sdk:/app
+      - /app/node_modules
+
+  # Monitoring Services
+  prometheus-demo:
+    image: prom/prometheus:latest
+    container_name: intendly-prometheus-demo
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_demo_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.route-prefix=/'
+    networks:
+      - demo-network
+
+  grafana-demo:
+    image: grafana/grafana:latest
+    container_name: intendly-grafana-demo
+    ports:
+      - "3003:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: demo
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_INSTALL_PLUGINS: grafana-clock-panel,grafana-simple-json-datasource
+    volumes:
+      - grafana_demo_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+    depends_on:
+      - prometheus-demo
+    networks:
+      - demo-network
+
+  # Demo Controller Service
+  demo-controller:
+    build:
+      context: .
+      dockerfile: Dockerfile.demo-controller
+    container_name: intendly-demo-controller
+    environment:
+      NODE_ENV: demo
+      DEMO_MODE: presentation
+      FRONTEND_URL: http://frontend-demo:3000
+      API_URL: http://relayer-demo:3001
+      WS_URL: ws://websocket-demo:3002
+      GRAFANA_URL: http://grafana-demo:3000
+      PRESENTER: "Demo Operator"
+      AUDIENCE: "Stakeholders"
+    ports:
+      - "3004:3004"
+    depends_on:
+      frontend-demo:
+        condition: service_healthy
+      grafana-demo:
+        condition: service_started
+    networks:
+      - demo-network
+    volumes:
+      - ./scripts:/app/scripts
+      - ./reports:/app/reports
+
+# Networks
+networks:
+  demo-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+# Volumes
+volumes:
+  postgres_demo_data:
+    driver: local
+  redis_demo_data:
+    driver: local
+  prometheus_demo_data:
+    driver: local
+  grafana_demo_data:
+    driver: local
+
+# Additional services for different demo modes
+x-demo-profiles:
+  # Minimal demo - just core services
+  minimal: &minimal-services
+    - postgres-demo
+    - redis-demo
+    - anvil-demo
+    - relayer-demo
+    - websocket-demo
+    - frontend-demo
+    - solver-1-demo
+    - solver-2-demo
+
+  # Full demo - all services including monitoring
+  full: &full-services
+    - postgres-demo
+    - redis-demo
+    - anvil-demo
+    - relayer-demo
+    - coordinator-demo
+    - websocket-demo
+    - frontend-demo
+    - solver-1-demo
+    - solver-2-demo
+    - solver-3-demo
+    - prometheus-demo
+    - grafana-demo
+    - demo-controller
+
+  # Presentation demo - optimized for live demos
+  presentation: &presentation-services
+    - postgres-demo
+    - redis-demo
+    - anvil-demo
+    - relayer-demo
+    - websocket-demo
+    - frontend-demo
+    - solver-1-demo
+    - solver-2-demo
+    - solver-3-demo
+    - grafana-demo
+    - demo-controller
