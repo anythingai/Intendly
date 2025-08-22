@@ -39,7 +39,7 @@
     "docs:serve": "typedoc --watch"
   },
   "dependencies": {
-    "viem": "^1.19.9",
+    "viem": "^2.7.0",
     "abitype": "^0.10.0",
     "ws": "^8.14.2",
     "axios": "^1.6.2",
